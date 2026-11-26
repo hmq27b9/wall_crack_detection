@@ -8,7 +8,7 @@ import cv2
 
 from config.detector_config import DetectorConfig
 from config.settings import SUPPORTED_EXTENSIONS
-from models.inspection import build_inspection_document, save_inspection
+from models import build_inspection_document, save_inspection
 from .detector import segment_cracks, measure_components, annotate_image
 
 
