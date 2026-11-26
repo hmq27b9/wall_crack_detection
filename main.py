@@ -1,4 +1,4 @@
-
+# main.py
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 from pathlib import Path
