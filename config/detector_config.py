@@ -1,5 +1,7 @@
-# wallcrack/config.py
+# config/detector_config.py
+"""Tunable parameters for the classical crack detector."""
 from dataclasses import dataclass
+
 
 @dataclass
 class DetectorConfig:

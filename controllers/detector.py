@@ -1,10 +1,11 @@
-# wallcrack/detector.py
+# controllers/detector.py
 from __future__ import annotations
 
 import cv2
 import numpy as np
 from skimage.morphology import skeletonize
-from .config import DetectorConfig
+
+from config.detector_config import DetectorConfig
 
 
 def _odd(value: int) -> int:
@@ -13,11 +14,7 @@ def _odd(value: int) -> int:
 
 
 def segment_cracks(image_bgr: np.ndarray, cfg: DetectorConfig):
-    """Return a binary crack mask and useful intermediate images.
-
-    This is a classical image-processing baseline, not a trained AI model.
-    It works best for dark cracks on relatively light concrete surfaces.
-    """
+    """Return a binary crack mask and useful intermediate images."""
     gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(
         clipLimit=cfg.clahe_clip_limit,
@@ -29,7 +26,6 @@ def segment_cracks(image_bgr: np.ndarray, cfg: DetectorConfig):
     kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k, k))
     blackhat = cv2.morphologyEx(enhanced, cv2.MORPH_BLACKHAT, kernel)
 
-    # Otsu thresholding adapts to the contrast in each image.
     _, blackhat_mask = cv2.threshold(
         blackhat, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
     )
@@ -54,7 +50,6 @@ def segment_cracks(image_bgr: np.ndarray, cfg: DetectorConfig):
             iterations=cfg.close_iterations
         )
 
-    # Remove tiny specks and implausibly large regions.
     count, labels, stats, _ = cv2.connectedComponentsWithStats(
         (mask > 0).astype(np.uint8), connectivity=8
     )
@@ -74,12 +69,7 @@ def segment_cracks(image_bgr: np.ndarray, cfg: DetectorConfig):
 
 
 def measure_components(mask: np.ndarray, pixel_per_mm: float | None = None):
-    """Measure each connected crack region in image pixel coordinates.
-
-    Length is approximated by skeleton pixel count. Width is estimated from
-    the distance transform sampled along the skeleton. These are image-plane
-    estimates; perspective and camera angle can distort physical dimensions.
-    """
+    """Measure each connected crack region in image pixel coordinates."""
     binary = (mask > 0).astype(np.uint8)
     count, labels, stats, centroids = cv2.connectedComponentsWithStats(
         binary, connectivity=8
@@ -103,7 +93,6 @@ def measure_components(mask: np.ndarray, pixel_per_mm: float | None = None):
         mean_width_px = float(np.mean(widths_px)) if widths_px.size else 0.0
         max_width_px = float(np.max(widths_px)) if widths_px.size else 0.0
 
-        # PCA orientation of all foreground pixels, in degrees from +x.
         ys, xs = np.where(component)
         if len(xs) >= 2:
             coords = np.column_stack((xs, ys)).astype(np.float64)
