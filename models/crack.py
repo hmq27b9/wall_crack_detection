@@ -50,12 +50,13 @@ def build_inspection_document(
     pixel_per_mm: float | None,
     detector_config: dict,
     image_hash: str | None = None,
+    diagnostics: dict | None = None,
 ) -> dict:
     """Assemble the full inspection document for one image."""
     height, width = image_shape[:2]
     image_hash = image_hash or sha256_file(image_path)
 
-    return {
+    document = {
         "wall_id": wall_id,
         "image": {
             "filename": image_path.name,
@@ -79,7 +80,8 @@ def build_inspection_document(
         },
         "detector": {
             "method": (
-                "OpenCV black-hat + Otsu threshold + connected components"
+                "OpenCV black-hat + background flatten + hysteresis "
+                "(percentile thresholds) + adaptive AND + shape filter"
             ),
             "config": detector_config,
         },
@@ -89,6 +91,11 @@ def build_inspection_document(
             for i, c in enumerate(cracks, start=1)
         ],
     }
+
+    if diagnostics is not None:
+        document["detector"]["diagnostics"] = diagnostics
+
+    return document
 
 
 # ----------------------------------------------------------------------

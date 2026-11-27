@@ -27,7 +27,7 @@ def process_image(
     if image is None:
         raise ValueError(f"Could not read image: {image_path}")
 
-    mask, _intermediate = segment_cracks(image, config)
+    mask, intermediate = segment_cracks(image, config, pixel_per_mm)
     cracks = measure_components(mask, pixel_per_mm)
     annotated = annotate_image(image, cracks)
 
@@ -38,6 +38,13 @@ def process_image(
     cv2.imwrite(str(mask_path), mask)
     cv2.imwrite(str(annotated_path), annotated)
 
+    diagnostics = {
+        "blackhat_kernel": intermediate.get("blackhat_kernel"),
+        "low_threshold": intermediate.get("low_threshold"),
+        "high_threshold": intermediate.get("high_threshold"),
+        "config": config.__dict__,
+    }
+
     document = build_inspection_document(
         wall_id=wall_id,
         image_path=image_path,
@@ -47,6 +54,7 @@ def process_image(
         cracks=cracks,
         pixel_per_mm=pixel_per_mm,
         detector_config=config.__dict__,
+        diagnostics=diagnostics,
     )
 
     json_path = output_dir / f"{stem}_results.json"
