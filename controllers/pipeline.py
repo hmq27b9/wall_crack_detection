@@ -1,4 +1,3 @@
-# controllers/pipeline.py
 from __future__ import annotations
 
 import json
@@ -39,9 +38,8 @@ def process_image(
     cv2.imwrite(str(annotated_path), annotated)
 
     diagnostics = {
-        "blackhat_kernel": intermediate.get("blackhat_kernel"),
-        "low_threshold": intermediate.get("low_threshold"),
-        "high_threshold": intermediate.get("high_threshold"),
+        "mad_k": intermediate.get("mad_k"),
+        "sub_image_size": intermediate.get("sub_image_size"),
         "config": config.__dict__,
     }
 

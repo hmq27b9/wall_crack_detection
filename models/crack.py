@@ -1,4 +1,3 @@
-# models/crack.py
 """Crack domain model: normalises raw detector output into DB records."""
 from __future__ import annotations
 
@@ -80,8 +79,9 @@ def build_inspection_document(
         },
         "detector": {
             "method": (
-                "OpenCV black-hat + background flatten + hysteresis "
-                "(percentile thresholds) + adaptive AND + shape filter"
+                "Median Absolute Deviation (MAD) adaptive thresholding on 224x224 sub-images, "
+                "followed by morphological cleaning, shape-based component filtering (to remove "
+                "round noise elements), and skeleton-based width estimation via distance transform."
             ),
             "config": detector_config,
         },
