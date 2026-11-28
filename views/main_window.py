@@ -1,267 +1,195 @@
-# views/main_window.py
-"""Tkinter view — no detection logic, only presentation + user events."""
+"""Main window (PyQt6). Contains no detection logic: it only emits signals."""
 from __future__ import annotations
 
-import tkinter as tk
-from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog,
+                             QFormLayout, QGroupBox, QLabel, QMainWindow,
+                             QMessageBox, QPlainTextEdit, QProgressBar,
+                             QPushButton, QSpinBox, QSplitter, QVBoxLayout,
+                             QWidget)
 
-import cv2
-from PIL import Image, ImageTk
-
-from controllers.app_controller import AppController
-from config.settings import OUTPUT_DIR, SUPPORTED_EXTENSIONS
+from models.visualization import MODES
+from .image_viewer import ImageViewer
 
 
-class MainWindow:
-    def __init__(self, root: tk.Tk):
-        self.root = root
-        self.root.title("Wall Crack Detection System")
-        self.root.geometry("1200x800")
-        self.root.minsize(900, 650)
+class MainWindow(QMainWindow):
+    open_requested = pyqtSignal(str)
+    detect_requested = pyqtSignal()
+    mode_changed = pyqtSignal(str)
+    export_overlay_requested = pyqtSignal(str)
+    export_csv_requested = pyqtSignal(str)
 
-        self.controller = AppController(output_dir=OUTPUT_DIR)
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Wall Crack Detector - MAD adaptive threshold")
+        self.resize(1300, 800)
 
-        self.image_path: Path | None = None
-        self.original_photo = None
-        self.annotated_photo = None
+        self.viewer = ImageViewer()
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self._build_side_panel())
+        splitter.addWidget(self.viewer)
+        splitter.setStretchFactor(1, 1)
+        self.setCentralWidget(splitter)
+        self.statusBar().showMessage("Open an image to begin.")
+        self.set_actions_enabled(False, False)
 
-        self._build_interface()
+    # ------------------------------------------------------------ building
+    def _build_side_panel(self) -> QWidget:
+        panel = QWidget()
+        panel.setMaximumWidth(360)
+        panel.setMinimumWidth(300)
+        lay = QVBoxLayout(panel)
 
-    # ------------------------------------------------------------------
-    # GUI construction
-    # ------------------------------------------------------------------
-    def _build_interface(self):
-        main_frame = ttk.Frame(self.root, padding=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        self.btn_open = QPushButton("Open image…")
+        self.btn_open.clicked.connect(self._on_open)
+        self.lbl_info = QLabel("No image loaded")
+        self.lbl_info.setWordWrap(True)
+        lay.addWidget(self.btn_open)
+        lay.addWidget(self.lbl_info)
 
-        ttk.Label(
-            main_frame,
-            text="Wall Crack Detection System",
-            font=("Arial", 20, "bold"),
-        ).pack(pady=10)
+        # --- MAD parameters
+        box = QGroupBox("MAD segmentation")
+        form = QFormLayout(box)
+        self.sp_k = QDoubleSpinBox()
+        self.sp_k.setRange(1.0, 6.0)
+        self.sp_k.setSingleStep(0.1)
+        self.sp_k.setValue(2.5)
+        self.sp_k.setToolTip("T = median - k·MAD. Low k: more sensitive (k≤2.5 detects 0.1 mm),\n"
+                             "high k: less noise and better width accuracy.")
+        self.sp_tile = QSpinBox()
+        self.sp_tile.setRange(32, 1024)
+        self.sp_tile.setValue(224)
+        self.chk_blobs = QCheckBox("Remove short blobs (noise)")
+        self.chk_blobs.setChecked(True)
+        self.sp_minlen = QSpinBox()
+        self.sp_minlen.setRange(2, 500)
+        self.sp_minlen.setValue(20)
+        self.sp_minlen.setSuffix(" px")
+        form.addRow("k (scale factor)", self.sp_k)
+        form.addRow("Sub-image size", self.sp_tile)
+        form.addRow(self.chk_blobs)
+        form.addRow("Min. length", self.sp_minlen)
+        lay.addWidget(box)
 
-        # --- Input controls ------------------------------------------------
-        input_frame = ttk.LabelFrame(
-            main_frame, text="Inspection Information", padding=10
-        )
-        input_frame.pack(fill=tk.X, pady=5)
+        # --- camera / scale
+        cam = QGroupBox("Scale (pinhole camera model)")
+        cform = QFormLayout(cam)
+        self.sp_dist = QDoubleSpinBox()
+        self.sp_dist.setRange(0.05, 50.0)
+        self.sp_dist.setDecimals(3)
+        self.sp_dist.setValue(1.0)
+        self.sp_dist.setSuffix(" m")
+        self.sp_aov = QDoubleSpinBox()
+        self.sp_aov.setRange(1.0, 180.0)
+        self.sp_aov.setValue(40.4)
+        self.sp_aov.setSuffix(" °")
+        self.sp_aov.setToolTip("Horizontal angle of view of the lens.")
+        self.chk_manual = QCheckBox("Enter mm/pixel manually")
+        self.sp_mm = QDoubleSpinBox()
+        self.sp_mm.setRange(0.001, 50.0)
+        self.sp_mm.setDecimals(4)
+        self.sp_mm.setValue(0.1)
+        self.sp_mm.setSuffix(" mm/px")
+        self.chk_manual.toggled.connect(self._toggle_manual)
+        cform.addRow("Distance u", self.sp_dist)
+        cform.addRow("Angle of view α", self.sp_aov)
+        cform.addRow(self.chk_manual)
+        cform.addRow(self.sp_mm)
+        lay.addWidget(cam)
+        self._toggle_manual(False)
 
-        ttk.Label(input_frame, text="Wall ID:").grid(
-            row=0, column=0, padx=5, pady=5
-        )
-        self.wall_id_entry = ttk.Entry(input_frame, width=25)
-        self.wall_id_entry.grid(row=0, column=1, padx=5, pady=5)
-        self.wall_id_entry.insert(0, "WALL-001")
+        self.btn_detect = QPushButton("Detect cracks")
+        self.btn_detect.clicked.connect(self.detect_requested.emit)
+        self.progress = QProgressBar()
+        self.progress.setRange(0, 0)
+        self.progress.hide()
+        lay.addWidget(self.btn_detect)
+        lay.addWidget(self.progress)
 
-        ttk.Label(input_frame, text="Pixels per mm:").grid(
-            row=0, column=2, padx=5, pady=5
-        )
-        self.calibration_entry = ttk.Entry(input_frame, width=15)
-        self.calibration_entry.grid(row=0, column=3, padx=5, pady=5)
+        # --- display
+        lay.addWidget(QLabel("Display"))
+        self.cmb_mode = QComboBox()
+        self.cmb_mode.addItems(MODES)
+        self.cmb_mode.currentTextChanged.connect(self.mode_changed.emit)
+        self.btn_fit = QPushButton("Fit to window")
+        self.btn_fit.clicked.connect(self.viewer.fit)
+        lay.addWidget(self.cmb_mode)
+        lay.addWidget(self.btn_fit)
 
-        ttk.Label(input_frame, text="Leave blank if uncalibrated").grid(
-            row=0, column=4, padx=5, pady=5
-        )
+        # --- results
+        self.txt_results = QPlainTextEdit()
+        self.txt_results.setReadOnly(True)
+        self.txt_results.setPlaceholderText("Results will appear here.")
+        lay.addWidget(self.txt_results, 1)
 
-        # --- Buttons -------------------------------------------------------
-        button_frame = ttk.Frame(main_frame)
-        button_frame.pack(fill=tk.X, pady=10)
+        self.btn_png = QPushButton("Export overlay image…")
+        self.btn_png.clicked.connect(self._on_export_png)
+        self.btn_csv = QPushButton("Export widths (CSV)…")
+        self.btn_csv.clicked.connect(self._on_export_csv)
+        lay.addWidget(self.btn_png)
+        lay.addWidget(self.btn_csv)
+        return panel
 
-        self.load_button = ttk.Button(
-            button_frame, text="Load Image", command=self.load_image
-        )
-        self.load_button.pack(side=tk.LEFT, padx=5)
+    # ------------------------------------------------------------- slots
+    def _toggle_manual(self, manual: bool) -> None:
+        self.sp_mm.setEnabled(manual)
+        self.sp_dist.setEnabled(not manual)
+        self.sp_aov.setEnabled(not manual)
 
-        self.detect_button = ttk.Button(
-            button_frame, text="Detect & Save",
-            command=self.start_detection, state=tk.DISABLED,
-        )
-        self.detect_button.pack(side=tk.LEFT, padx=5)
+    def _on_open(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open image", "", "Images (*.png *.jpg *.jpeg *.bmp *.tif *.tiff)")
+        if path:
+            self.open_requested.emit(path)
 
-        # --- Image preview -------------------------------------------------
-        preview_frame = ttk.Frame(main_frame)
-        preview_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+    def _on_export_png(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save overlay", "overlay.png", "PNG (*.png);;JPEG (*.jpg)")
+        if path:
+            self.export_overlay_requested.emit(path)
 
-        original_frame = ttk.LabelFrame(
-            preview_frame, text="Original Image", padding=5
-        )
-        original_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+    def _on_export_csv(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(self, "Save widths", "widths.csv", "CSV (*.csv)")
+        if path:
+            self.export_csv_requested.emit(path)
 
-        annotated_frame = ttk.LabelFrame(
-            preview_frame, text="Detected Cracks", padding=5
-        )
-        annotated_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=5)
+    # ------------------------------------------------------- API for controller
+    def get_params(self) -> dict:
+        return dict(
+            k=self.sp_k.value(), tile_size=self.sp_tile.value(),
+            remove_blobs=self.chk_blobs.isChecked(), min_length_px=self.sp_minlen.value(),
+            use_manual_pixel_size=self.chk_manual.isChecked(),
+            manual_pixel_size_mm=self.sp_mm.value(),
+            distance_m=self.sp_dist.value(), angle_of_view_deg=self.sp_aov.value())
 
-        self.original_label = ttk.Label(original_frame, text="No image loaded")
-        self.original_label.pack(fill=tk.BOTH, expand=True)
+    def current_mode(self) -> str:
+        return self.cmb_mode.currentText()
 
-        self.annotated_label = ttk.Label(
-            annotated_frame, text="Detection preview"
-        )
-        self.annotated_label.pack(fill=tk.BOTH, expand=True)
+    def set_mode(self, mode: str) -> None:
+        self.cmb_mode.blockSignals(True)
+        self.cmb_mode.setCurrentText(mode)
+        self.cmb_mode.blockSignals(False)
 
-        # --- Results -------------------------------------------------------
-        result_frame = ttk.LabelFrame(
-            main_frame, text="Detection Results", padding=5
-        )
-        result_frame.pack(fill=tk.BOTH, expand=True, pady=5)
+    def show_image(self, rgb, fit: bool = False) -> None:
+        self.viewer.set_rgb(rgb, fit=fit)
 
-        self.result_text = tk.Text(result_frame, height=9, wrap=tk.WORD)
-        self.result_text.pack(fill=tk.BOTH, expand=True)
+    def set_image_info(self, text: str) -> None:
+        self.lbl_info.setText(text)
+        self.statusBar().showMessage("Image loaded.")
 
-        # --- Status bar ----------------------------------------------------
-        self.status_label = ttk.Label(
-            main_frame, text="Ready", relief=tk.SUNKEN, anchor=tk.W
-        )
-        self.status_label.pack(fill=tk.X, pady=5)
+    def set_results_text(self, text: str) -> None:
+        self.txt_results.setPlainText(text)
 
-        self.progress = ttk.Progressbar(main_frame, mode="indeterminate")
-        self.progress.pack(fill=tk.X)
+    def set_busy(self, busy: bool) -> None:
+        self.progress.setVisible(busy)
+        self.btn_detect.setEnabled(not busy)
+        self.statusBar().showMessage("Detecting cracks…" if busy else "Done.")
 
-    # ------------------------------------------------------------------
-    # Image loading
-    # ------------------------------------------------------------------
-    def load_image(self):
-        filetypes = [
-            ("Image files", " ".join(f"*{e}" for e in sorted(SUPPORTED_EXTENSIONS))),
-            ("All files", "*.*"),
-        ]
-        path = filedialog.askopenfilename(
-            title="Select Wall Image", filetypes=filetypes
-        )
-        if not path:
-            return
+    def set_actions_enabled(self, has_image: bool, has_result: bool) -> None:
+        self.btn_detect.setEnabled(has_image)
+        self.cmb_mode.setEnabled(has_image)
+        self.btn_fit.setEnabled(has_image)
+        self.btn_png.setEnabled(has_image)
+        self.btn_csv.setEnabled(has_result)
 
-        self.image_path = Path(path)
-        image = cv2.imread(str(self.image_path))
-        if image is None:
-            messagebox.showerror("Error", "Unable to load image.")
-            return
-
-        self._display_image(image, self.original_label, "original")
-        self.annotated_label.configure(image="", text="Detection preview")
-        self.annotated_photo = None
-        self.detect_button.configure(state=tk.NORMAL)
-
-        self.result_text.delete("1.0", tk.END)
-        self.result_text.insert(
-            tk.END, f"Loaded image: {self.image_path.name}\n"
-        )
-        self.status_label.configure(text="Image loaded successfully.")
-
-    # ------------------------------------------------------------------
-    def _display_image(self, image, label, image_type):
-        rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        pil_image = Image.fromarray(rgb)
-        pil_image.thumbnail((520, 350))
-        photo = ImageTk.PhotoImage(pil_image)
-        label.configure(image=photo, text="")
-        if image_type == "original":
-            self.original_photo = photo
-        else:
-            self.annotated_photo = photo
-
-    # ------------------------------------------------------------------
-    # Detection
-    # ------------------------------------------------------------------
-    def start_detection(self):
-        if self.image_path is None:
-            return
-
-        wall_id = self.wall_id_entry.get().strip()
-        if not wall_id:
-            messagebox.showwarning(
-                "Missing information", "Please enter a Wall ID."
-            )
-            return
-
-        calibration_text = self.calibration_entry.get().strip()
-        pixel_per_mm = None
-        if calibration_text:
-            try:
-                pixel_per_mm = float(calibration_text)
-                if pixel_per_mm <= 0:
-                    raise ValueError
-            except ValueError:
-                messagebox.showerror(
-                    "Invalid calibration",
-                    "Pixels per mm must be a positive number.",
-                )
-                return
-
-        self.detect_button.configure(state=tk.DISABLED)
-        self.load_button.configure(state=tk.DISABLED)
-        self.progress.start(10)
-
-        self.controller.start_detection(
-            image_path=self.image_path,
-            wall_id=wall_id,
-            pixel_per_mm=pixel_per_mm,
-            on_success=lambda r: self.root.after(0, self._on_success, r),
-            on_error=lambda e: self.root.after(0, self._on_error, e),
-            on_status=lambda s: self.root.after(0, self._set_status, s),
-        )
-
-    # ------------------------------------------------------------------
-    def _set_status(self, text: str):
-        self.status_label.configure(text=text)
-
-    def _on_success(self, result: dict):
-        self.progress.stop()
-        self.detect_button.configure(state=tk.NORMAL)
-        self.load_button.configure(state=tk.NORMAL)
-
-        # Re-read the annotated image from disk for display
-        annotated = cv2.imread(result["annotated"])
-        if annotated is not None:
-            self._display_image(annotated, self.annotated_label, "annotated")
-
-        self._populate_results(result)
-        self.status_label.configure(
-            text="Detection completed. Results saved to MongoDB."
-        )
-
-    def _on_error(self, error: str):
-        self.progress.stop()
-        self.detect_button.configure(state=tk.NORMAL)
-        self.load_button.configure(state=tk.NORMAL)
-        self.status_label.configure(text="Detection failed.")
-        messagebox.showerror("Detection Error", error)
-
-    # ------------------------------------------------------------------
-    def _populate_results(self, result: dict):
-        self.result_text.delete("1.0", tk.END)
-        self.result_text.insert(
-            tk.END,
-            f"DETECTION COMPLETED\n"
-            f"==============================\n\n"
-            f"Total cracks detected: {result['crack_count']}\n"
-            f"MongoDB document ID: {result['mongodb_id']}\n\n",
-        )
-        # Crack details are stored in the JSON; read them back for display
-        import json
-        try:
-            with open(result["json"], encoding="utf-8") as fh:
-                doc = json.load(fh)
-            for crack in doc.get("cracks", []):
-                self.result_text.insert(
-                    tk.END,
-                    f"{crack['crack_id']}\n"
-                    f"  Centroid: {crack['coordinates_px']['centroid']}\n"
-                    f"  Bounding box: {crack['coordinates_px']['bounding_box']}\n"
-                    f"  Length: {crack['length_px']} px\n"
-                    f"  Mean width: {crack['mean_width_px']} px\n"
-                    f"  Max width: {crack['max_width_px']} px\n"
-                    f"  Orientation: {crack['orientation_degrees']}°\n\n",
-                )
-        except (OSError, KeyError, json.JSONDecodeError):
-            pass
-
-        self.result_text.insert(
-            tk.END,
-            f"\nOUTPUT FILES\n"
-            f"Annotated: {result['annotated']}\n"
-            f"Mask: {result['mask']}\n"
-            f"JSON: {result['json']}\n",
-        )
+    def show_error(self, msg: str) -> None:
+        QMessageBox.critical(self, "Error", msg)

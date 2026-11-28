@@ -1,5 +1,5 @@
-opencv-python
-numpy
-scikit-image
-pymongo
-python-dotenv
+PyQt6>=6.5
+numpy>=1.24
+opencv-python>=4.8
+scikit-image>=0.21
+scipy>=1.10
